@@ -1,0 +1,6 @@
+@Ataxx.Controller_HostAddress = http://localhost:5136
+
+GET {{Ataxx.Controller_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

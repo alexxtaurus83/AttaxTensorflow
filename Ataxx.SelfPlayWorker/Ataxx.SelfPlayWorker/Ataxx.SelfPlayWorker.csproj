@@ -1,0 +1,46 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommandLineParser" Version="2.9.1" />
+    <PackageReference Include="FluentScheduler" Version="5.5.1" />
+    <PackageReference Include="RestSharp" Version="112.1.0" />
+    <PackageReference Include="SciSharp.TensorFlow.Redist" Version="2.16.0" />
+    <PackageReference Include="SciSharp.TensorFlow.Redist-Windows-GPU" Version="2.10.3" />
+    <PackageReference Include="TensorFlow.Keras" Version="0.10.5" />
+    <PackageReference Include="TensorFlow.NET" Version="0.100.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Ataxx.Core\Ataxx.Core\Ataxx.Core.csproj" />
+  </ItemGroup>
+
+	<Target Name="CopyNativeTensorFlow" AfterTargets="Build">
+		<PropertyGroup>
+			<TensorFlowGpuRedistVersion>2.10.3</TensorFlowGpuRedistVersion>
+			<TensorFlowCpuRedistVersion>2.16.0</TensorFlowCpuRedistVersion>
+		</PropertyGroup>
+
+		<PropertyGroup>
+			<TensorFlowGpuRedistPath>$(UserProfile)\.nuget\packages\scisharp.tensorflow.redist-windows-gpu\$(TensorFlowGpuRedistVersion)</TensorFlowGpuRedistPath>
+			<TensorFlowCpuRedistPath>$(UserProfile)\.nuget\packages\scisharp.tensorflow.redist\$(TensorFlowCpuRedistVersion)</TensorFlowCpuRedistPath>
+		</PropertyGroup>
+
+		<PropertyGroup>
+			<GpuDestFile>$(OutDir)runtimes\win-x64-gpu\tensorflow.dll</GpuDestFile>
+			<CpuDestFile>$(OutDir)runtimes\win-x64-cpu\tensorflow.dll</CpuDestFile>
+		</PropertyGroup>
+
+		<Message Text="Copying native TensorFlow DLLs..." Importance="high" />
+
+		<Copy SourceFiles="$(TensorFlowGpuRedistPath)\runtimes\win-x64\native\tensorflow.dll" DestinationFiles="$(GpuDestFile)" SkipUnchangedFiles="true" Condition="Exists('$(TensorFlowGpuRedistPath)\runtimes\win-x64\native\tensorflow.dll')" />
+		<Copy SourceFiles="$(TensorFlowCpuRedistPath)\runtimes\win-x64\native\tensorflow.dll" DestinationFiles="$(CpuDestFile)" SkipUnchangedFiles="true" Condition="Exists('$(TensorFlowCpuRedistPath)\runtimes\win-x64\native\tensorflow.dll')" />
+	</Target>
+
+</Project>
