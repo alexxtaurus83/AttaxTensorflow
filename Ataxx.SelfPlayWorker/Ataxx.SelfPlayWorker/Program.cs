@@ -12,7 +12,7 @@ public class Program {
         [Option("controller-url", Default = "http://localhost:5299", HelpText = "URL of the Ataxx.Controller service.")]
         public string ControllerUrl { get; set; }
 
-        [Option('g', "games", Default = 30, HelpText = "The total number of games to simulate per session.")] //40000
+        [Option('g', "games", Default = 100, HelpText = "The total number of games to simulate per session.")] //40000
         public int NumberOfGames { get; set; }
 
         [Option('o', "output-path",  Default = @"F:\attax", HelpText = "The directory path to save game log files.")]
@@ -29,6 +29,9 @@ public class Program {
 
         [Option("backend", Default = "cpu", HelpText = "The processing backend to use: 'cpu' or 'gpu'.")]
         public string Backend { get; set; }
+
+        [Option("run-once", Default = false, HelpText = "If true, the worker will run one session and exit. Otherwise, it runs continuously.")]
+        public bool RunOnce { get; set; }
     }
 
     public static void Main(string[] args) {
@@ -63,14 +66,18 @@ public class Program {
                        return;
                    }
 
-                   Console.WriteLine($"Initializing scheduler for '{o.Mode}' mode using '{o.Backend}' backend...");
-
-                   JobManager.Initialize(new WorkerRegistry(o));
-
-                   Console.WriteLine("Self-Play Worker service is running. Press [Enter] to exit.");
-                   Console.ReadLine();
-
-                   JobManager.StopAndBlock();
+                   if (o.RunOnce) {
+                       Console.WriteLine($"Starting single self-play session for {o.NumberOfGames} games...");
+                       var job = new SelfPlayJob(o);
+                       job.Execute();
+                       Console.WriteLine("Single session finished. Exiting.");
+                   } else {
+                       Console.WriteLine($"Initializing scheduler for '{o.Mode}' mode using '{o.Backend}' backend...");
+                       JobManager.Initialize(new WorkerRegistry(o));
+                       Console.WriteLine("Self-Play Worker service is running continuously. Press [Enter] to exit.");
+                       Console.ReadLine();
+                       JobManager.StopAndBlock();
+                   }
                });
     }
 }
