@@ -8,9 +8,9 @@
 
   <ItemGroup>
     <PackageReference Include="FluentScheduler" Version="5.5.1" />
-    <PackageReference Include="Keras.NET" Version="3.8.5" />
+    <!--PackageReference Include="Keras.NET" Version="3.8.5" /-->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.1" />
-    <PackageReference Include="TensorFlow.Keras" Version="0.15.0" />
+    <PackageReference Include="TensorFlow.Keras" Version="0.10.5" />
   </ItemGroup>
 
   <ItemGroup>

@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.Linq;
 using Tensorflow;
@@ -13,7 +14,7 @@ using Tensorflow.Keras.Losses;
 using Tensorflow.Keras.Optimizers;
 using Tensorflow.Operations.Initializers;
 using static Tensorflow.Binding;
-using NS = NumSharp;
+using Tensorflow.NumPy;
 
 namespace Ataxx.Trainer {
     public class ModelTrainer {
@@ -36,7 +37,7 @@ namespace Ataxx.Trainer {
             }
         }
 
-        private IEnumerable<(NDArray, (NDArray, NDArray))> StreamSamplesFromFile(string logFilePath) {
+        private IEnumerable<(NDArray, NDArray, NDArray)> StreamSamplesFromFile(string logFilePath) {
             foreach (var line in File.ReadLines(logFilePath)) {
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -53,7 +54,7 @@ namespace Ataxx.Trainer {
                         var policyTensor = new NDArray(turn.MctsPolicy);
                         var valueTensor = new NDArray(new float[] { turn.GameOutcome });
 
-                        yield return (inputTensor, (policyTensor, valueTensor));
+                        yield return (inputTensor, policyTensor, valueTensor);
                     }
                 }
             }
@@ -75,33 +76,66 @@ namespace Ataxx.Trainer {
             return count;
         }
 
+
         public void Train() {
             try {
+                CudaInterop.PrintGpuMemory();
                 string logFilePath = Path.Combine(_options.DataPath, "training_data.jsonl");
                 if (!File.Exists(logFilePath)) {
                     Console.WriteLine("No training data log file found. Exiting job.");
                     return;
                 }
 
-                int numSamples = GetTotalSampleCount(logFilePath);
+                var output_types = new TF_DataType[] { TF_DataType.TF_FLOAT, TF_DataType.TF_FLOAT, TF_DataType.TF_FLOAT };
+                var output_shapes = new Shape[] { new Shape(7, 7, 4), new Shape(AttaxConstants.MCTS.PolicyVectorSize), new Shape(1) };
+
+                Console.WriteLine("Loading all samples into memory (single pass)...");
+                var all_samples = new List<(NDArray, NDArray, NDArray)>();
+                var stopwatch = Stopwatch.StartNew();
+                long lastUpdateTicks = 0;
+
+                foreach (var sample in StreamSamplesFromFile(logFilePath))
+                {
+                    all_samples.Add(sample);
+
+                    if (stopwatch.Elapsed.Ticks - lastUpdateTicks > TimeSpan.FromSeconds(5).Ticks)
+                    {
+                        lastUpdateTicks = stopwatch.Elapsed.Ticks;
+                        Console.Write($"\rLoaded {all_samples.Count} samples...");
+                    }
+                }
+                stopwatch.Stop();
+                Console.WriteLine($"\rLoaded a total of {all_samples.Count} samples in {stopwatch.Elapsed.TotalSeconds:F2}s.");
+                
+                int numSamples = all_samples.Count;
                 if (numSamples < (_options.BatchSize * 2)) {
                     Console.WriteLine($"Not enough valid data ({numSamples} samples) found to run a training session. Exiting job.");
                     return;
                 }
 
-                // FIX 1: Define output types and shapes as flat arrays, not tuples.
-                // The API expects a simple array for these arguments. The order must match
-                // the flattened structure of the generator's output: (input, policy, value).
-                var output_types = new TF_DataType[] { TF_DataType.TF_FLOAT, TF_DataType.TF_FLOAT, TF_DataType.TF_FLOAT };
-                var output_shapes = new Shape[] { new Shape(7, 7, 4), new Shape(AttaxConstants.MCTS.PolicyVectorSize), new Shape(1) };
+                var input_tensors = all_samples.Select(s => s.Item1).ToArray();
+                var policy_tensors = all_samples.Select(s => s.Item2).ToArray();
+                var value_tensors = all_samples.Select(s => s.Item3).ToArray();
 
-                // FIX 2: Explicitly define the delegate type for the generator lambda.
-                var generator = new Func<IEnumerable<(NS.NDArray, (NS.NDArray, NS.NDArray))>>(() => StreamSamplesFromFile(logFilePath));
+                var inputs = np.stack(input_tensors);
+                var policies = np.stack(policy_tensors);
+                var values = np.stack(value_tensors);
+                Console.WriteLine("All samples loaded.");
 
-                // FIX 3: Explicitly specify the generic type arguments for from_generator.
-                var dataset = tf.data.Dataset.from_generator<(NS.NDArray, (NS.NDArray, NS.NDArray))>(generator, output_types, output_shapes);
+                long ramUsedBytes = Process.GetCurrentProcess().PrivateMemorySize64;
+                double ramUsedMb = ramUsedBytes / (1024.0 * 1024.0);
+                Console.WriteLine($"RAM used by process after loading data: {ramUsedMb:F2} MB");
 
-                dataset = dataset.shuffle(Math.Min(numSamples, SHUFFLE_BUFFER_SIZE));
+                Console.WriteLine("Creating TensorFlow dataset from tensors (moving data to GPU)...");
+                var input_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(inputs));
+                var policy_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(policies));
+                var value_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(values));
+                var dataset = tf.data.Dataset.zip(new IDatasetV2[] { input_dataset, policy_dataset, value_dataset });
+                Console.WriteLine("Dataset created successfully.");
+
+                Console.WriteLine("Shuffling dataset...");
+                dataset = dataset.shuffle(numSamples);
+                Console.WriteLine("Dataset shuffled.");
 
                 int valCount = (int)(numSamples * _options.ValidationSplit);
                 int trainCount = numSamples - valCount;
@@ -128,11 +162,10 @@ namespace Ataxx.Trainer {
                     float totalTrainLoss = 0;
                     int trainBatches = 0;
 
-                    foreach (var tensors in train_dataset) {
-                        // The dataset yields a flat Tensors object; unpack with an indexer.
-                        var batch_inputs = tensors[0];
-                        var batch_policy_labels = tensors[1];
-                        var batch_value_labels = tensors[2];
+                    foreach (var (batch_inputs, batch_labels) in train_dataset) {
+                        var policy_and_value_labels = batch_labels as Tensors;
+                        var batch_policy_labels = policy_and_value_labels[0];
+                        var batch_value_labels = policy_and_value_labels[1];
 
                         using var tape = tf.GradientTape();
                         var predictions = model.Apply(batch_inputs, training: true) as Tensors;
@@ -152,10 +185,10 @@ namespace Ataxx.Trainer {
 
                     float totalValLoss = 0;
                     int valBatches = 0;
-                    foreach (var tensors in val_dataset) {
-                        var batch_inputs = tensors[0];
-                        var batch_policy_labels = tensors[1];
-                        var batch_value_labels = tensors[2];
+                    foreach (var (batch_inputs, batch_labels) in val_dataset) {
+                        var policy_and_value_labels = batch_labels as Tensors;
+                        var batch_policy_labels = policy_and_value_labels[0];
+                        var batch_value_labels = policy_and_value_labels[1];
 
                         var predictions = model.Apply(batch_inputs, training: false) as Tensors;
                         var policy_pred = predictions[0];
@@ -182,6 +215,7 @@ namespace Ataxx.Trainer {
                     writer.add_summary(valSummary.ToString(), epoch);
 
                     Console.WriteLine($"Epoch {epoch + 1}/{_options.Epochs} -> Train Loss: {avgTrainLoss:F4}, Val Loss: {avgValLoss:F4}, Time: {sw.ElapsedMilliseconds}ms");
+                    CudaInterop.PrintGpuMemory();
                 }
                 SaveModel(model);
 

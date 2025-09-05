@@ -1,5 +1,6 @@
 ﻿using Ataxx.Core;
-using NumSharp;
+using Tensorflow;
+using Tensorflow.NumPy;
 using static Ataxx.Core.AtaxxLogic;
 
 namespace Ataxx.Trainer {

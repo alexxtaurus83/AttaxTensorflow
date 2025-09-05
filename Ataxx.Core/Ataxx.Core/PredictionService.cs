@@ -5,7 +5,7 @@ using System.Linq;
 using Tensorflow;
 using Tensorflow.Keras.Engine;
 using static Tensorflow.Binding;
-using TFN = Tensorflow.NumPy;
+using Tensorflow.NumPy;
 
 namespace Ataxx.Core {
     // The class no longer needs to implement IDisposable
@@ -29,8 +29,7 @@ namespace Ataxx.Core {
             var fen = _logic.GetStateAsFen(boardState, player);
             var ns_input = DataPreprocessor.FenToInputTensor(_logic, fen);
 
-            var tf_input = TFN.np.array(ns_input.ToArray<float>()).reshape(new int[] { 1, 7, 7, 4 });
-
+            var tf_input = ns_input.reshape(new int[] { 1, 7, 7, 4 });
             var outputs = _model.Apply(tf_input);
             var policyTensor = outputs[0];
             var valueTensor = outputs[1];

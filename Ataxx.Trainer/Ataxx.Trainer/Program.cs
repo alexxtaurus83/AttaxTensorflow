@@ -10,16 +10,16 @@ public class TrainerRegistry : Registry {
 
 public class Program {
     public class Options {
-        [Option('d', "data-path", Default = @"M:\attax", HelpText = "Path to the directory of game log files.")]
+        [Option('d', "data-path", Default = @"F:\attax", HelpText = "Path to the directory of game log files.")]
         public string DataPath { get; set; } = string.Empty;
 
-        [Option('m', "model-output-path", Default = @"M:\attax\model", HelpText = "Directory to save the trained model.")]
+        [Option('m', "model-output-path", Default = @"F:\attax\model", HelpText = "Directory to save the trained model.")]
         public string ModelOutputPath { get; set; } = string.Empty;
 
         [Option('e', "epochs", Default = 5, HelpText = "Number of training epochs.")]
         public int Epochs { get; set; }
 
-        [Option('b', "batch-size", Default = 256, HelpText = "Batch size for training.")]
+        [Option('b', "batch-size", Default = 64, HelpText = "Batch size for training.")]
         public int BatchSize { get; set; }
 
         [Option('l', "learning-rate", Default = 0.001f, HelpText = "Learning rate for the Adam optimizer.")]
