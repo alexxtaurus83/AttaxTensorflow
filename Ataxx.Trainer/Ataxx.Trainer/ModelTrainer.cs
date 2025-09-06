@@ -77,70 +77,41 @@ namespace Ataxx.Trainer {
         }
 
 
-        public void Train() {
+        public void Train()
+        {
             Tensorflow.Summaries.FileWriter writer = null;
-            try {
+            try
+            {
                 CudaInterop.PrintGpuMemory();
-                string logFilePath = Path.Combine(_options.DataPath, "training_data.jsonl");
-                if (!File.Exists(logFilePath)) {
-                    Console.WriteLine("No training data log file found. Exiting job.");
+
+                var allFiles = Directory.GetFiles(_options.DataPath, "training_data_part_*.jsonl");
+                if (allFiles.Length == 0)
+                {
+                    Console.WriteLine("No training data files found. Exiting job.");
                     return;
                 }
 
-                Console.WriteLine("Loading all samples into memory (single pass)...");
-                var all_samples = new List<(NDArray, NDArray, NDArray)>();
-                var stopwatch = Stopwatch.StartNew();
-                long lastUpdateTicks = 0;
+                // Shuffle the file list and split for validation
+                var rng = new Random(42);
+                allFiles = allFiles.OrderBy(f => rng.Next()).ToArray();
+                
+                List<string> trainFiles;
+                List<string> valFiles;
 
-                foreach (var sample in StreamSamplesFromFile(logFilePath)) {
-                    all_samples.Add(sample);
-                    if (stopwatch.Elapsed.Ticks - lastUpdateTicks > TimeSpan.FromSeconds(5).Ticks) {
-                        lastUpdateTicks = stopwatch.Elapsed.Ticks;
-                        Console.Write($"\rLoaded {all_samples.Count} samples...");
-                    }
+                if (allFiles.Length == 1)
+                {
+                    Console.WriteLine("Warning: Only one data file found. Using it for both training and validation.");
+                    trainFiles = allFiles.ToList();
+                    valFiles = allFiles.ToList();
                 }
-                stopwatch.Stop();
-                Console.WriteLine($"\rLoaded a total of {all_samples.Count} samples in {stopwatch.Elapsed.TotalSeconds:F2}s.");
-
-                int numSamples = all_samples.Count;
-                if (numSamples < (_options.BatchSize * 2)) {
-                    Console.WriteLine($"Not enough valid data ({numSamples} samples) found to run a training session. Exiting job.");
-                    return;
+                else
+                {
+                    int valFileCount = (int)Math.Max(1, allFiles.Length * _options.ValidationSplit);
+                    valFiles = allFiles.Take(valFileCount).ToList();
+                    trainFiles = allFiles.Skip(valFileCount).ToList();
                 }
 
-                var input_tensors = all_samples.Select(s => s.Item1).ToArray();
-                var policy_tensors = all_samples.Select(s => s.Item2).ToArray();
-                var value_tensors = all_samples.Select(s => s.Item3).ToArray();
-
-                var inputs = np.stack(input_tensors);
-                var policies = np.stack(policy_tensors);
-                var values = np.stack(value_tensors);
-                Console.WriteLine("All samples loaded.");
-
-                long ramUsedBytes = Process.GetCurrentProcess().PrivateMemorySize64;
-                double ramUsedMb = ramUsedBytes / (1024.0 * 1024.0);
-                Console.WriteLine($"RAM used by process after loading data: {ramUsedMb:F2} MB");
-
-                Console.WriteLine("Creating TensorFlow dataset from tensors (moving data to GPU)...");
-                var input_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(inputs));
-                var policy_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(policies));
-                var value_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(values));
-                var dataset = tf.data.Dataset.zip(new IDatasetV2[] { input_dataset, policy_dataset, value_dataset });
-                Console.WriteLine("Dataset created successfully.");
-
-                // 1. Correctly shuffle the ENTIRE dataset before splitting.
-                Console.WriteLine("Shuffling dataset...");
-                dataset = dataset.shuffle(numSamples, seed: 42);
-                Console.WriteLine("Dataset shuffled.");
-
-                int valCount = (int)(numSamples * _options.ValidationSplit);
-                Console.WriteLine($"Splitting into {numSamples - valCount} training samples and {valCount} validation samples.");
-
-                var val_dataset = dataset.take(valCount);
-                var train_dataset = dataset.skip(valCount);
-
-                train_dataset = train_dataset.batch(_options.BatchSize).prefetch(tf.data.AUTOTUNE);
-                val_dataset = val_dataset.batch(_options.BatchSize).prefetch(tf.data.AUTOTUNE);
+                Console.WriteLine($"Found {allFiles.Length} data files. Using {trainFiles.Count} for training and {valFiles.Count} for validation.");
 
                 var (model, optimizer) = BuildModel();
                 model.summary();
@@ -151,72 +122,85 @@ namespace Ataxx.Trainer {
                 var logdir = Path.Combine("logs", DateTime.Now.ToString("yyyy-MM-dd-HH-mm-ss"));
                 writer = tf.summary.FileWriter(logdir, tf.get_default_graph());
 
-                Console.WriteLine("Starting training loop...");
-                for (int epoch = 0; epoch < _options.Epochs; epoch++) {
+                long totalSamples = 0;
+                for (int epoch = 0; epoch < _options.Epochs; epoch++)
+                {
+                    Console.WriteLine($"--- Starting Epoch {epoch + 1}/{_options.Epochs} ---");
                     var sw = System.Diagnostics.Stopwatch.StartNew();
                     float totalTrainLoss = 0, totalTrainPolicyLoss = 0, totalTrainValueLoss = 0;
-                    int trainBatches = 0;
+                    int totalTrainBatches = 0;
+                    if(epoch == 0) totalSamples = 0; // Reset on first epoch
 
-                    foreach (var (batch_inputs, batch_labels) in train_dataset) {
-                        Tensors policy_and_value_labels = batch_labels;
-                        var batch_policy_labels = policy_and_value_labels[0];
-                        var batch_value_labels = policy_and_value_labels[1];
+                    // --- Training Phase ---
+                    foreach (var (filePath, index) in trainFiles.Select((path, i) => (path, i)))
+                    {
+                        Console.WriteLine($"Processing training file {index + 1}/{trainFiles.Count}: {Path.GetFileName(filePath)}");
+                        var (train_dataset, numSamples) = LoadDatasetFromFile(filePath);
+                        totalSamples += numSamples;
 
-                        using var tape = tf.GradientTape();
-                        Tensors predictions = model.Apply(batch_inputs, training: true);
-                        var policy_pred = predictions[0];
-                        var value_pred = predictions[1];
+                        foreach (var (batch_inputs, batch_labels) in train_dataset)
+                        {
+                            var batch_policy_labels = (batch_labels as Tensors)[0];
+                            var batch_value_labels = (batch_labels as Tensors)[1];
 
-                        var policy_loss = tf.reduce_mean(policy_loss_func.Call(batch_policy_labels, policy_pred));
-                        var value_loss = tf.reduce_mean(value_loss_func.Call(batch_value_labels, value_pred));
-                        var combined_loss = policy_loss + value_loss;
+                            using var tape = tf.GradientTape();
+                            var predictions = model.Apply(batch_inputs, training: true) as Tensors;
+                            var policy_pred = predictions[0];
+                            var value_pred = predictions[1];
 
-                        var gradients = tape.gradient(combined_loss, model.TrainableVariables);
-                        // 4. Add Gradient Clipping.
-                        var (clipped_gradients, _) = tf.clip_by_global_norm(gradients, clip_norm: 1.0f);
-                        optimizer.apply_gradients(zip(clipped_gradients, model.TrainableVariables));
+                            var policy_loss = tf.reduce_mean(policy_loss_func.Call(batch_policy_labels, policy_pred));
+                            var value_loss = tf.reduce_mean(value_loss_func.Call(batch_value_labels, value_pred));
+                            var combined_loss = policy_loss + value_loss;
 
-                        totalTrainLoss += combined_loss.numpy();
-                        totalTrainPolicyLoss += policy_loss.numpy();
-                        totalTrainValueLoss += value_loss.numpy();
-                        trainBatches++;
+                            var gradients = tape.gradient(combined_loss, model.TrainableVariables);
+                            var (clipped_gradients, _) = tf.clip_by_global_norm(gradients, clip_norm: 1.0f);
+                            optimizer.apply_gradients(zip(clipped_gradients, model.TrainableVariables));
 
-                        if (trainBatches % 10 == 0) {
-                            Console.Write($"\rEpoch {epoch + 1}: {trainBatches} batches processed...");
+                            totalTrainLoss += combined_loss.numpy();
+                            totalTrainPolicyLoss += policy_loss.numpy();
+                            totalTrainValueLoss += value_loss.numpy();
+                            totalTrainBatches++;
                         }
                     }
 
+                    // --- Validation Phase ---
                     float totalValLoss = 0, totalValPolicyLoss = 0, totalValValueLoss = 0;
-                    int valBatches = 0;
-                    foreach (var (batch_inputs, batch_labels) in val_dataset) {
-                        var policy_and_value_labels = batch_labels as Tensors;
-                        var batch_policy_labels = policy_and_value_labels[0];
-                        var batch_value_labels = policy_and_value_labels[1];
+                    int totalValBatches = 0;
+                    if (valFiles.Count > 0)
+                    {
+                        Console.WriteLine("Starting validation phase...");
+                        foreach (var filePath in valFiles)
+                        {
+                            var (val_dataset, _) = LoadDatasetFromFile(filePath);
+                            foreach (var (batch_inputs, batch_labels) in val_dataset)
+                            {
+                                var batch_policy_labels = (batch_labels as Tensors)[0];
+                                var batch_value_labels = (batch_labels as Tensors)[1];
+                                var predictions = model.Apply(batch_inputs, training: false) as Tensors;
+                                var policy_pred = predictions[0];
+                                var value_pred = predictions[1];
 
-                        var predictions = model.Apply(batch_inputs, training: false) as Tensors;
-                        var policy_pred = predictions[0];
-                        var value_pred = predictions[1];
+                                var policy_loss = tf.reduce_mean(policy_loss_func.Call(batch_policy_labels, policy_pred));
+                                var value_loss = tf.reduce_mean(value_loss_func.Call(batch_value_labels, value_pred));
+                                var combined_loss = policy_loss + value_loss;
 
-                        var policy_loss = tf.reduce_mean(policy_loss_func.Call(batch_policy_labels, policy_pred));
-                        var value_loss = tf.reduce_mean(value_loss_func.Call(batch_value_labels, value_pred));
-                        var combined_loss = policy_loss + value_loss;
-
-                        totalValLoss += combined_loss.numpy();
-                        totalValPolicyLoss += policy_loss.numpy();
-                        totalValValueLoss += value_loss.numpy();
-                        valBatches++;
+                                totalValLoss += combined_loss.numpy();
+                                totalValPolicyLoss += policy_loss.numpy();
+                                totalValValueLoss += value_loss.numpy();
+                                totalValBatches++;
+                            }
+                        }
                     }
 
                     sw.Stop();
-                    float avgTrainLoss = trainBatches > 0 ? totalTrainLoss / trainBatches : 0;
-                    float avgTrainPolicyLoss = trainBatches > 0 ? totalTrainPolicyLoss / trainBatches : 0;
-                    float avgTrainValueLoss = trainBatches > 0 ? totalTrainValueLoss / trainBatches : 0;
+                    float avgTrainLoss = totalTrainBatches > 0 ? totalTrainLoss / totalTrainBatches : 0;
+                    float avgTrainPolicyLoss = totalTrainBatches > 0 ? totalTrainPolicyLoss / totalTrainBatches : 0;
+                    float avgTrainValueLoss = totalTrainBatches > 0 ? totalTrainValueLoss / totalTrainBatches : 0;
 
-                    float avgValLoss = valBatches > 0 ? totalValLoss / valBatches : 0;
-                    float avgValPolicyLoss = valBatches > 0 ? totalValPolicyLoss / valBatches : 0;
-                    float avgValValueLoss = valBatches > 0 ? totalValValueLoss / valBatches : 0;
+                    float avgValLoss = totalValBatches > 0 ? totalValLoss / totalValBatches : 0;
+                    float avgValPolicyLoss = totalValBatches > 0 ? totalValPolicyLoss / totalValBatches : 0;
+                    float avgValValueLoss = totalValBatches > 0 ? totalValValueLoss / totalValBatches : 0;
 
-                    // 2. More detailed logging.
                     var trainSummary = new Tensorflow.Summary();
                     trainSummary.Value.Add(new Tensorflow.Summary.Types.Value { Tag = "Loss/train_total", SimpleValue = avgTrainLoss });
                     trainSummary.Value.Add(new Tensorflow.Summary.Types.Value { Tag = "Loss/train_policy", SimpleValue = avgTrainPolicyLoss });
@@ -229,18 +213,34 @@ namespace Ataxx.Trainer {
                     valSummary.Value.Add(new Tensorflow.Summary.Types.Value { Tag = "Loss/validation_value", SimpleValue = avgValValueLoss });
                     writer.add_summary(valSummary.ToString(), epoch);
 
-                    Console.WriteLine($"Epoch {epoch + 1}/{_options.Epochs} -> Train Loss: {avgTrainLoss:F4} (P: {avgTrainPolicyLoss:F4}, V: {avgTrainValueLoss:F4}), Val Loss: {avgValLoss:F4} (P: {avgValPolicyLoss:F4}, V: {avgValValueLoss:F4}), Time: {sw.ElapsedMilliseconds}ms");
+                    Console.WriteLine($"Epoch {epoch + 1}/{_options.Epochs} -> Train Loss: {avgTrainLoss:F4}, Val Loss: {avgValLoss:F4}, Time: {sw.Elapsed.TotalSeconds:F2}s");
                     CudaInterop.PrintGpuMemory();
                 }
-                SaveModel(model, numSamples);
 
-                string archiveDir = Path.Combine(_options.DataPath, "archive");
-                Directory.CreateDirectory(archiveDir);
-                string archiveFileName = $"data_{DateTime.UtcNow:yyyyMMddHHmmss}.jsonl";
-                File.Move(logFilePath, Path.Combine(archiveDir, archiveFileName));
-                Console.WriteLine($"Archived processed data to {archiveFileName}");
+                SaveModel(model, (int)totalSamples);
 
-            } catch (Exception ex) {
+                if (_options.DeleteDataAfterProcessing)
+                {
+                    Console.WriteLine("Deleting processed data files...");
+                    foreach (var file in allFiles)
+                    {
+                        File.Delete(file);
+                    }
+                    Console.WriteLine($"Deleted {allFiles.Length} files.");
+                }
+                else
+                {
+                    string archiveDir = Path.Combine(_options.DataPath, "archive", $"processed_{DateTime.UtcNow:yyyyMMdd_HHmmss}");
+                    Directory.CreateDirectory(archiveDir);
+                    foreach (var file in allFiles)
+                    {
+                        File.Move(file, Path.Combine(archiveDir, Path.GetFileName(file)));
+                    }
+                    Console.WriteLine($"Archived {allFiles.Length} processed data files to {archiveDir}");
+                }
+            }
+            catch (Exception ex)
+            {
                 Console.WriteLine(ex.Message);
                 Console.WriteLine(ex.StackTrace);
             }
@@ -280,6 +280,38 @@ namespace Ataxx.Trainer {
             var model = tf.keras.Model(inputs, new Tensors(policy_head, value_head));
             var optimizer = new Adam(_options.LearningRate);
             return (model, optimizer);
+        }
+
+        private (IDatasetV2, int) LoadDatasetFromFile(string filePath)
+        {
+            var all_samples = new List<(NDArray, NDArray, NDArray)>();
+            foreach (var sample in StreamSamplesFromFile(filePath))
+            {
+                all_samples.Add(sample);
+            }
+
+            if (all_samples.Count == 0)
+            {
+                return (null, 0);
+            }
+
+            var input_tensors = all_samples.Select(s => s.Item1).ToArray();
+            var policy_tensors = all_samples.Select(s => s.Item2).ToArray();
+            var value_tensors = all_samples.Select(s => s.Item3).ToArray();
+
+            var inputs = np.stack(input_tensors);
+            var policies = np.stack(policy_tensors);
+            var values = np.stack(value_tensors);
+
+            var input_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(inputs));
+            var policy_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(policies));
+            var value_dataset = tf.data.Dataset.from_tensor_slices(tf.constant(values));
+            var dataset = tf.data.Dataset.zip(input_dataset, policy_dataset, value_dataset);
+
+            dataset = dataset.shuffle((int)all_samples.Count);
+            dataset = dataset.batch(_options.BatchSize).prefetch(tf.data.AUTOTUNE);
+
+            return (dataset, all_samples.Count);
         }
 
         private void SaveModel(IModel model, int numSamples) {

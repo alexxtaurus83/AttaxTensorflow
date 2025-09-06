@@ -27,6 +27,9 @@ public class Program {
                 
         [Option('v', "val-split", Default = 0.1f, HelpText = "Fraction of data to use for validation (e.g., 0.1 for 10%).")]
         public float ValidationSplit { get; set; }
+
+        [Option("delete-data", Default = false, HelpText = "Delete data files after processing instead of archiving them.")]
+        public bool DeleteDataAfterProcessing { get; set; }
     }
 
     public static void Main(string[] args) {

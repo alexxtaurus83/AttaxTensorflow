@@ -1,4 +1,6 @@
-﻿using System;
+﻿using Ataxx.Trainer;
+using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace Ataxx.Core {
@@ -10,16 +12,13 @@ namespace Ataxx.Core {
         private readonly PredictionService _predictionService;
         private readonly int _numSimulations;
 
-        /// <summary>
-        /// Initializes the MCTS engine.
-        /// </summary>
-        /// <param name="logic">An instance of the game's rules engine.</param>
-        /// <param name="predictionService">The service that provides NN predictions.</param>
-        /// <param name="numSimulations">The number of simulations to run for each move search.</param>
-        public MctsEngine(AtaxxLogic logic, PredictionService predictionService, int numSimulations = 400) {
+        private readonly int _batchSize;
+
+        public MctsEngine(AtaxxLogic logic, PredictionService predictionService, int numSimulations = 400, int batchSize = 8) {
             _logic = logic;
             _predictionService = predictionService;
             _numSimulations = numSimulations;
+            _batchSize = batchSize;
         }
 
         /// <summary>
@@ -42,9 +41,8 @@ namespace Ataxx.Core {
                 return (default(AtaxxLogic.Move), new float[AttaxConstants.MCTS.PolicyVectorSize]);
             }
 
-            // Run the main simulation loop.
-            for (int i = 0; i < _numSimulations; i++) {
-                RunSimulation(rootNode);
+            for (int i = 0; i < _numSimulations; i += _batchSize) {
+                RunSimulationsInBatch(rootNode, Math.Min(_batchSize, _numSimulations - i));
             }
 
             // Create the policy vector based on the visit counts of the root's children.
@@ -63,37 +61,55 @@ namespace Ataxx.Core {
             return (bestMove, mctsPolicy);
         }
 
-        /// <summary>
-        /// Runs a single iteration of the MCTS algorithm (Selection, Expansion, Simulation, Backpropagation).
-        /// </summary>
-        private void RunSimulation(MctsNode startNode) {
-            var node = startNode;
+        private void RunSimulationsInBatch(MctsNode rootNode, int numSimulationsToRun)
+        {
+            var leafNodes = new List<MctsNode>();
+            var terminalNodes = new List<(MctsNode Node, double Value)>();
 
-            // 1. SELECTION: Traverse the tree using the UCB formula until a leaf node is found.
-            while (node.IsExpanded && !_logic.IsGameOver(node.State)) {
-                node = node.SelectChild();
+            // 1. SELECTION for the entire batch
+            for (int i = 0; i < numSimulationsToRun; i++)
+            {
+                var node = rootNode;
+                while (node.IsExpanded && !_logic.IsGameOver(node.State))
+                {
+                    node = node.SelectChild();
+                }
+
+                if (_logic.IsGameOver(node.State))
+                {
+                    int redCount = _logic.PopCount(node.State.RedPieces);
+                    int blueCount = _logic.PopCount(node.State.BluePieces);
+                    double value = (redCount > blueCount) ? 1.0 : (blueCount > redCount) ? -1.0 : 0.0;
+                    terminalNodes.Add((node, value));
+                }
+                else
+                {
+                    leafNodes.Add(node);
+                }
             }
 
-            double value;
+            // 2. EXPANSION & PREDICTION for non-terminal leaves
+            if (leafNodes.Count > 0)
+            {
+                var batchInputs = leafNodes.Select(n => DataPreprocessor.FenToInputTensor(_logic, _logic.GetStateAsFen(n.State, n.Player))).ToArray();
+                var (policies, values) = _predictionService.PredictBatch(batchInputs);
 
-            // If we've reached a terminal state (game over), the value is determined directly.
-            if (_logic.IsGameOver(node.State)) {
-                int redCount = _logic.PopCount(node.State.RedPieces);
-                int blueCount = _logic.PopCount(node.State.BluePieces);
-                value = (redCount > blueCount) ? 1.0 : (blueCount > redCount) ? -1.0 : 0.0;
-            } else {
-                // 2. EXPANSION & 3. SIMULATION:
-                // Use the neural network to get the policy for child nodes and the value of the current leaf node.
-                // The 'value' from the NN is our intelligent simulation result.
-                var (policy, predictedValue) = _predictionService.Predict(node.State, startNode.Player);
-                value = predictedValue;
+                for (int i = 0; i < leafNodes.Count; i++)
+                {
+                    var node = leafNodes[i];
+                    var policy = policies[i];
+                    var value = values[i];
 
-                // Expand the leaf node with the new policy information.
-                node.Expand(policy);
+                    node.Expand(policy);
+                    node.Backpropagate(value);
+                }
             }
 
-            // 4. BACKPROPAGATION: Update the visit counts and total values back up the tree.
-            node.Backpropagate(value);
+            // 3. BACKPROPAGATION for terminal nodes
+            foreach (var (node, value) in terminalNodes)
+            {
+                node.Backpropagate(value);
+            }
         }
     }
 }

@@ -18,7 +18,7 @@ public class Program {
         [Option('o', "output-path",  Default = @"F:\attax", HelpText = "The directory path to save game log files.")]
         public string OutputPath { get; set; } = string.Empty;
 
-        [Option('p', "mode", Default = PlayMode.Random, HelpText = "The play mode for the worker: Random or Mcts.")] //Default = PlayMode.Mcts
+        [Option('p', "mode", Default = PlayMode.Mcts, HelpText = "The play mode for the worker: Random or Mcts.")] //Default = PlayMode.Mcts
         public PlayMode Mode { get; set; }
 
         [Option("model-path", Default = @"F:\attax\model", HelpText = "Required for Mcts mode. The path to the trained model folder (can be UNC).")]
@@ -27,37 +27,28 @@ public class Program {
         [Option("blocked-cells", Default = 6, HelpText = "Number of random blocked cells to place on the board.")]
         public int BlockedCells { get; set; }        
 
-        [Option("backend", Default = "cpu", HelpText = "The processing backend to use: 'cpu' or 'gpu'.")]
+        [Option("backend", Default = "gpu", HelpText = "The processing backend to use: 'cpu' or 'gpu'.")]
         public string Backend { get; set; }
 
-        [Option("run-once", Default = false, HelpText = "If true, the worker will run one session and exit. Otherwise, it runs continuously.")]
+        [Option("parallel-games", Default = 1, HelpText = "Number of games to run in parallel (only used with CPU backend).")]
+        public int ParallelGames { get; set; }
+
+        [Option("mcts-batch-size", Default = 128, HelpText = "Batch size for MCTS predictions on GPU.")]
+        public int MctsBatchSize { get; set; }
+
+        [Option("run-once", Default = true, HelpText = "If true, the worker will run one session and exit. Otherwise, it runs continuously.")]
         public bool RunOnce { get; set; }
     }
 
     public static void Main(string[] args) {
         Parser.Default.ParseArguments<Options>(args)
                .WithParsed<Options>(o => {
-                   // --- DYNAMIC LIBRARY RESOLVER ---
-                   // This block runs BEFORE any TensorFlow code is called.
-                   // It tells the .NET runtime where to find the native tensorflow.dll
-                   NativeLibrary.SetDllImportResolver(typeof(Tensorflow.Binding).Assembly, (libraryName, assembly, searchPath) =>
-                   {
-                       if (libraryName == "tensorflow") {
-                           string arch = "win-x64"; // Assuming Windows 64-bit
-                           string backendToLoad = o.Backend.ToLower() == "cpu" ? "cpu" : "gpu";
-
-                           // Construct the full path to the chosen native library
-                           string libPath = Path.Combine(AppContext.BaseDirectory, "runtimes", $"{arch}-{backendToLoad}", "tensorflow.dll");
-
-                           if (File.Exists(libPath)) {
-                               Console.WriteLine($"Dynamically loading TensorFlow backend from: {libPath}");
-                               return NativeLibrary.Load(libPath);
-                           }
-                       }
-                       return IntPtr.Zero; // Fallback to default loading mechanism
-                   });
-
-                   // --- The rest of the program logic runs now ---
+                    var gpus = Tensorflow.Binding.tf.config.list_physical_devices("GPU");
+                    if (gpus.Length > 0)
+                    {
+                        foreach (var device in gpus)
+                            Tensorflow.Binding.tf.config.experimental.set_memory_growth(device, true);
+                    }
 
                    if (o.Mode == PlayMode.Mcts && string.IsNullOrEmpty(o.ModelPath)) {
                        Console.ForegroundColor = ConsoleColor.Red;

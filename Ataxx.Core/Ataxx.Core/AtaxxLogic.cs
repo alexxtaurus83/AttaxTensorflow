@@ -33,6 +33,10 @@ namespace Ataxx.Core {
         private readonly ulong[] _orthogonalStepMoves;
         #endregion
 
+        // A single, thread-safe Random instance for the entire class.
+        private static readonly Random _random = new Random();
+        private static readonly object _randomLock = new object();
+
         public AtaxxLogic()
         {
             // Precompute move masks for performance
@@ -280,7 +284,6 @@ namespace Ataxx.Core {
 
             // Add random blocks if requested
             if (blockedCellCount > 0) {
-                var random = new Random();
                 ulong emptySquares = board.EmptySquares();
                 int squaresToBlock = Math.Min(blockedCellCount, PopCount(emptySquares));
 
@@ -293,7 +296,11 @@ namespace Ataxx.Core {
 
                 for (int i = 0; i < squaresToBlock; i++) {
                     if (emptyIndices.Count == 0) break;
-                    int randomIndex = random.Next(emptyIndices.Count);
+                    int randomIndex;
+                    lock (_randomLock)
+                    {
+                        randomIndex = _random.Next(emptyIndices.Count);
+                    }
                     int squareToBlock = emptyIndices[randomIndex];
                     emptyIndices.RemoveAt(randomIndex);
                     board.BlockedSquares |= (1UL << squareToBlock);

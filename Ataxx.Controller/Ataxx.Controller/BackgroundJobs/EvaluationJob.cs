@@ -23,8 +23,24 @@ public class EvaluationJob : IJob {
             var modelsPath = _configuration["ModelManagement:ModelsPath"];
             var bestModelName = _registry.GetBestModelName();
             if (bestModelName == "initial") {
-                _logger.LogInformation("No best model set yet. Skipping evaluation.");
-                return;
+                _logger.LogInformation("No best model set. Attempting to seed with the first available candidate model.");
+                var firstCandidateDir = Directory.GetDirectories(modelsPath, "*_candidate")
+                                                 .OrderBy(d => new DirectoryInfo(d).CreationTime)
+                                                 .FirstOrDefault();
+
+                if (firstCandidateDir != null) {
+                    string seedCandidateName = new DirectoryInfo(firstCandidateDir).Name.Replace("_candidate", "");
+                    string finalPath = Path.Combine(modelsPath, seedCandidateName);
+
+                    if (Directory.Exists(finalPath)) Directory.Delete(finalPath, true);
+                    Directory.Move(firstCandidateDir, finalPath);
+                    
+                    _logger.LogInformation("Found first candidate '{candidate}'. Promoting it to be the initial best model.", seedCandidateName);
+                    _registry.PromoteModel(seedCandidateName);
+                } else {
+                    _logger.LogInformation("No candidate models found to seed the registry. Skipping evaluation.");
+                }
+                return; // End the job after seeding, the next run will perform an evaluation.
             }
 
             var latestCandidateDir = Directory.GetDirectories(modelsPath, "*_candidate")
@@ -69,44 +85,30 @@ public class EvaluationJob : IJob {
         var results = new ConcurrentBag<double>();
         var logic = new Ataxx.Core.AtaxxLogic();
 
-        _logger.LogInformation("Loading models for evaluation match...");
+        _logger.LogInformation("viLoading models for evaluation match...");
         var bestPlayerService = new PredictionService(bestModelPath);
         var candidatePlayerService = new PredictionService(candidateModelPath);
-        var bestPlayerEngine = new MctsEngine(logic, bestPlayerService, evalOptions.Simulations);
-        var candidatePlayerEngine = new MctsEngine(logic, candidatePlayerService, evalOptions.Simulations);
+        var bestPlayerEngine = new MctsPlayer(new MctsEngine(logic, bestPlayerService, evalOptions.Simulations));
+        var candidatePlayerEngine = new MctsPlayer(new MctsEngine(logic, candidatePlayerService, evalOptions.Simulations));
 
         _logger.LogInformation("Starting {gameCount}-game evaluation match, parallelized.", evalOptions.Games);
 
         Parallel.For(0, evalOptions.Games, i => {
-            var candidatePlayerColor = (i % 2 == 0) ? Ataxx.Core.AtaxxLogic.PlayerColor.Red : Ataxx.Core.AtaxxLogic.PlayerColor.Blue;
-            var bestPlayerColor = logic.SwitchPlayer(candidatePlayerColor);
+            // Alternate who plays red for fairness
+            var redPlayer = (i % 2 == 0) ? candidatePlayerEngine : bestPlayerEngine;
+            var bluePlayer = (i % 2 == 0) ? bestPlayerEngine : candidatePlayerEngine;
 
-            var board = new Ataxx.Core.BitboardState();
-            board.RedPieces = (1UL << logic.GetBitIndex(0, 0)) | (1UL << logic.GetBitIndex(6, 6));
-            board.BluePieces = (1UL << logic.GetBitIndex(0, 6)) | (1UL << logic.GetBitIndex(6, 0));
+            var match = new MatchPlayer(logic, redPlayer, bluePlayer);
+            float result = match.Play(); // 1.0 for Red win, -1.0 for Blue win
 
-            var currentPlayer = Ataxx.Core.AtaxxLogic.PlayerColor.Red;
-
-            while (!logic.IsGameOver(board)) {
-                var engineToUse = (currentPlayer == candidatePlayerColor) ? candidatePlayerEngine : bestPlayerEngine;
-                var validMoves = logic.GetAllValidMoves(board, currentPlayer);
-                if (validMoves.Count == 0) {
-                    currentPlayer = logic.SwitchPlayer(currentPlayer);
-                    continue;
-                }
-                var move = engineToUse.FindBestMove(board, currentPlayer).bestMove;
-                board = logic.MakeMove(board, move, currentPlayer, false);
-                currentPlayer = logic.SwitchPlayer(currentPlayer);
+            // Convert result to candidate's perspective (1.0 = win, 0.0 = loss, 0.5 = draw)
+            if (result == 0.0f) {
+                results.Add(0.5);
+            } else if ((redPlayer == candidatePlayerEngine && result > 0) || (bluePlayer == candidatePlayerEngine && result < 0)) {
+                results.Add(1.0);
+            } else {
+                results.Add(0.0);
             }
-
-            int redCount = logic.PopCount(board.RedPieces);
-            int blueCount = logic.PopCount(board.BluePieces);
-
-            // CORRECTED: Fixed the typo from 'blue.Count' to 'blueCount'.
-            if (redCount == blueCount) { results.Add(0.5); return; }
-
-            if ((redCount > blueCount && candidatePlayerColor == Ataxx.Core.AtaxxLogic.PlayerColor.Red) ||
-                (blueCount > redCount && candidatePlayerColor == Ataxx.Core.AtaxxLogic.PlayerColor.Blue)) { results.Add(1.0); } else { results.Add(0.0); }
         });
 
         int totalGames = results.Count(r => r != 0.5); // Exclude draws for win-rate calculation
@@ -127,6 +129,6 @@ public class EvaluationJob : IJob {
     }
 }
 public class EvaluationOptions {
-    public int Games { get; set; } = 100;
+    public int Games { get; set; } = 1; //100
     public int Simulations { get; set; } = 100;
 }
