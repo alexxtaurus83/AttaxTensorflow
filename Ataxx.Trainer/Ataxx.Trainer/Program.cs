@@ -1,6 +1,7 @@
 ﻿using Ataxx.Trainer;
 using CommandLine;
 using FluentScheduler;
+using Tensorflow.Util;
 using static Tensorflow.Binding;
 public class TrainerRegistry : Registry {
     public TrainerRegistry(Program.Options options) {
@@ -10,10 +11,10 @@ public class TrainerRegistry : Registry {
 
 public class Program {
     public class Options {
-        [Option('d', "data-path", Default = @"F:\attax", HelpText = "Path to the directory of game log files.")]
+        [Option('d', "data-path", Default = "/mnt/f/attax", HelpText = "Path to the directory of game log files.")]
         public string DataPath { get; set; } = string.Empty;
 
-        [Option('m', "model-output-path", Default = @"F:\attax\model", HelpText = "Directory to save the trained model.")]
+        [Option('m', "model-output-path", Default = "/mnt/f/attax/model", HelpText = "Directory to save the trained model.")]
         public string ModelOutputPath { get; set; } = string.Empty;
 
         [Option('e', "epochs", Default = 5, HelpText = "Number of training epochs.")]
@@ -33,7 +34,7 @@ public class Program {
     }
 
     public static void Main(string[] args) {
-        Environment.SetEnvironmentVariable("TF_XLA_FLAGS", "--tf_xla_auto_jit=1");
+        Environment.SetEnvironmentVariable("XLA_FLAGS", "--tf_xla_auto_jit=1 --xla_gpu_cuda_data_dir=/usr/local/cuda-12.2");
         Parser.Default.ParseArguments<Options>(args)
                .WithParsed<Options>(o => {
                    Console.WriteLine("Initializing training scheduler...");

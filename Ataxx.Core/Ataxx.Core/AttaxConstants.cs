@@ -15,15 +15,5 @@ namespace Ataxx.Core {
             public const int PolicyVectorSize = 1176; // 49 'from' squares * 24 'to' squares        
         }
 
-
-
-        // We can keep these for reference or potential future use,
-        // but they are not used by the new MCTS engine.        
-        public static class OldHeuristicConst {
-            public const int earlyGame = 14;
-            public const int lateGame = 35;
-            public const int flipWeight = 25;
-            public const int riskAversionFactor = 13;
-        }
     }
 }

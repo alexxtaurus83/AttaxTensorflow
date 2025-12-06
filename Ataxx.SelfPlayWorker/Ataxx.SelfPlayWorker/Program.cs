@@ -12,16 +12,16 @@ public class Program {
         [Option("controller-url", Default = "http://localhost:5299", HelpText = "URL of the Ataxx.Controller service.")]
         public string ControllerUrl { get; set; }
 
-        [Option('g', "games", Default = 100, HelpText = "The total number of games to simulate per session.")] //40000
+        [Option('g', "games", Default = 20000, HelpText = "The total number of games to simulate per session.")] //40000
         public int NumberOfGames { get; set; }
 
-        [Option('o', "output-path",  Default = @"F:\attax", HelpText = "The directory path to save game log files.")]
+        [Option('o', "output-path",  Default = "/mnt/f/attax", HelpText = "The directory path to save game log files.")]
         public string OutputPath { get; set; } = string.Empty;
 
-        [Option('p', "mode", Default = PlayMode.Mcts, HelpText = "The play mode for the worker: Random or Mcts.")] //Default = PlayMode.Mcts
+        [Option('p', "mode", Default = PlayMode.Random, HelpText = "The play mode for the worker: Random or Mcts.")] //Default = PlayMode.Mcts
         public PlayMode Mode { get; set; }
 
-        [Option("model-path", Default = @"F:\attax\model", HelpText = "Required for Mcts mode. The path to the trained model folder (can be UNC).")]
+        [Option("model-path", Default = "/mnt/f/attax/model", HelpText = "Required for Mcts mode. The path to the trained model folder (can be UNC).")]
         public string? ModelPath { get; set; }
 
         [Option("blocked-cells", Default = 6, HelpText = "Number of random blocked cells to place on the board.")]

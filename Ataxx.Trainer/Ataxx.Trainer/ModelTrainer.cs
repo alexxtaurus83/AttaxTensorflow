@@ -136,10 +136,11 @@ namespace Ataxx.Trainer {
                     {
                         Console.WriteLine($"Processing training file {index + 1}/{trainFiles.Count}: {Path.GetFileName(filePath)}");
                         var (train_dataset, numSamples) = LoadDatasetFromFile(filePath);
-                        totalSamples += numSamples;
-
+                        Console.WriteLine($"dataset loaded");
+                        totalSamples += numSamples;                        
                         foreach (var (batch_inputs, batch_labels) in train_dataset)
                         {
+                            Console.WriteLine($"Processing totalTrainBatches {totalTrainBatches}");
                             var batch_policy_labels = (batch_labels as Tensors)[0];
                             var batch_value_labels = (batch_labels as Tensors)[1];
 
@@ -170,10 +171,11 @@ namespace Ataxx.Trainer {
                     {
                         Console.WriteLine("Starting validation phase...");
                         foreach (var filePath in valFiles)
-                        {
+                        {                            
                             var (val_dataset, _) = LoadDatasetFromFile(filePath);
                             foreach (var (batch_inputs, batch_labels) in val_dataset)
                             {
+                                Console.WriteLine($"Processing totalValBatches {totalValBatches}");
                                 var batch_policy_labels = (batch_labels as Tensors)[0];
                                 var batch_value_labels = (batch_labels as Tensors)[1];
                                 var predictions = model.Apply(batch_inputs, training: false) as Tensors;
@@ -285,11 +287,14 @@ namespace Ataxx.Trainer {
         private (IDatasetV2, int) LoadDatasetFromFile(string filePath)
         {
             var all_samples = new List<(NDArray, NDArray, NDArray)>();
+            var i = 0;
             foreach (var sample in StreamSamplesFromFile(filePath))
             {
+                Console.WriteLine($"loading sample {i}");
                 all_samples.Add(sample);
+                i++;
             }
-
+            Console.WriteLine($"{all_samples.Count} loaded");
             if (all_samples.Count == 0)
             {
                 return (null, 0);

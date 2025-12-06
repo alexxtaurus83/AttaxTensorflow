@@ -2,9 +2,6 @@
 using Ataxx.Core;
 using FluentScheduler;
 using System.Collections.Concurrent;
-using Tensorflow;
-using Tensorflow.Keras.Engine;
-using TFN = Tensorflow.NumPy;
 using static Tensorflow.Binding;
 public class EvaluationJob : IJob {
     private readonly ILogger<EvaluationJob> _logger;
