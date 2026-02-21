@@ -1,4 +1,4 @@
-## Discalmer: This project is not maintained yet. It stil lworking but not tested for teh full cycle. The reason it very hard to use port Tensorflow .Net.
+## Discalmer: This project is not maintained anymore. It stil lworking but not tested for teh full cycle. The reason it very hard to use port Tensorflow .Net. I've fully migrated to the https://github.com/alexxtaurus83/AttaxGameSimulator
 
 This is my firts try to build project using AI without any line of the code written by human.
 This project at earlier Alfa stage of development uses Neural Network based on TensorFlow.NET..
